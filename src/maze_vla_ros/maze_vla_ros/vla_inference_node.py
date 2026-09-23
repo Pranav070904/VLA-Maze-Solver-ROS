@@ -1,5 +1,4 @@
-import sys, os
-#sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'VLA-Maze-Solver', 'src'))
+import sys
 sys.path.insert(0, '/home/pranav/maze_vla_ws/src/maze_vla_ros/VLA-Maze-Solver/src')
 import rclpy
 from rclpy.node import Node

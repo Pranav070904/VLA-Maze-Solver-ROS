@@ -17,11 +17,9 @@ ENTITY_COLORS = np.array([[255, 0, 0], [0, 255, 0], [0, 0, 255]], dtype=np.uint8
 def snap_to_palette(frame):
     px = frame.reshape(-1, 3).astype(np.int32)
     is_black = px.max(axis=1) < BLACK_THRESH
-    # nearest-RGB-distance is wrong here: a dark shadow gray like (40,40,40)
-    # is numerically CLOSER to red (255,0,0) than to white (255,255,255) --
-    # only 2 channels differ vs 3. Classify by chroma instead: a grayish
-    # pixel (low max-min spread) is floor/white regardless of how dark the
-    # shadow made it; only a clearly saturated pixel is a colored entity.
+    # classify by chroma, not nearest-RGB-distance: a dark shadow gray like
+    # (40,40,40) is numerically closer to red than to white (only 2 channels
+    # differ vs 3), so a grayish pixel must snap to white regardless of how dark it is.
     chroma = px.max(axis=1) - px.min(axis=1)
     is_colored = chroma >= CHROMA_THRESH
     dominant_channel = px.argmax(axis=1)
@@ -39,15 +37,13 @@ class ImageToMaze(Node):
         self.bridge = CvBridge()
         self.create_subscription(Image, '/overhead_camera/image_raw', self.cb, 10)
         self.pub = self.create_publisher(Image, '/maze_obs', 10)
-        # always published, regardless of the threshold param, so the
-        # thresholded view can be inspected (rqt_image_view) independent of
-        # whether it's actually the thing being fed to the model
+        # always published regardless of the threshold param, so it can be
+        # inspected independent of whether it's actually fed to the model
         self.debug_pub = self.create_publisher(Image, '/maze_obs_thresholded', 10)
 
     def _to_msg(self, frame, header):
-        # cv_bridge 4.1.0's cv2_to_imgmsg has a broken encoding_to_cvtype2/cvtype_to_name
-        # mapping for multi-channel encodings (raises KeyError for 'rgb8'), so build the
-        # message via passthrough and set the encoding directly instead.
+        # cv_bridge 4.1.0's cv2_to_imgmsg raises KeyError for 'rgb8', so build
+        # via passthrough and set the encoding directly instead
         out = self.bridge.cv2_to_imgmsg(frame, encoding='passthrough')
         out.encoding = 'rgb8'
         out.header = header

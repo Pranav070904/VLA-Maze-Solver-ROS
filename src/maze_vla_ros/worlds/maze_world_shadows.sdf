@@ -53,7 +53,6 @@
       </link>
     </model>
 
-    <!-- Minimal differential-drive robot -->
     <model name="robot">
       <pose>0 0 0.1 0 0 0</pose>
 

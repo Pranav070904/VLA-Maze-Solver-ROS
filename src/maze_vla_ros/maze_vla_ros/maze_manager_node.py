@@ -1,10 +1,7 @@
 import subprocess
 import sys
-import os
 
-#sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'VLA-Maze-Solver', 'src'))
 sys.path.insert(0, '/home/pranav/maze_vla_ws/src/maze_vla_ros/VLA-Maze-Solver/src')
-
 
 import rclpy
 from rclpy.node import Node
@@ -37,15 +34,14 @@ class MazeManager(Node):
         self.new_episode()
 
     def new_episode(self):
-        # freeze physics and the camera feed while the maze is rebuilt, so the
-        # model isn't fed a half-built scene and the robot can't drift
+        # paused during rebuild so the model isn't fed a half-built scene
         self.set_paused(True)
         self.clear_maze()
         self.env.reset()
         self.spawn_maze()
         self.teleport_robot_to_start()
         self.set_paused(False)
-        # published last: "goals arrived" means the episode is fully set up
+        # published last: "goals arrived" signals the episode is fully set up
         self.goal_pub.publish(Float32MultiArray(data=self.goal_xy))
 
     def set_paused(self, paused):
@@ -56,8 +52,8 @@ class MazeManager(Node):
         ], check=False)
 
     def spawn(self, name, sdf, x, y, z):
-        # call the gz service directly: `ros2 run ros_gz_sim create` spins up a
-        # whole ROS node per model, which is slow and flaky ~20 times per reset
+        # calls the gz service directly instead of `ros2 run ros_gz_sim create`,
+        # which spins up a whole ROS node per model (slow, flaky ~20x per reset)
         sdf_escaped = sdf.replace('\\', '\\\\').replace('"', '\\"').replace('\n', ' ')
         subprocess.run([
             "gz", "service", "-s", f"/world/{WORLD}/create",

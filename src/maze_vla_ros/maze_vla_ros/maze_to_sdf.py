@@ -42,10 +42,9 @@ def wall_models(grid, cell_size=1.0):
 
 
 def _emissive_tag(enabled, r=1, g=1, b=1):
-    # emissive makes a material glow that color regardless of incoming light,
-    # which is exactly what keeps it flat/training-like under normal lighting
-    # but also what makes it immune to shadows/lighting perturbation sweeps --
-    # disable it (flat_materials=False) to let those sweeps actually register.
+    """Emissive glows that color regardless of incoming light: flat and
+    training-like under normal lighting, but immune to shadow/lighting
+    perturbation sweeps. Disable (flat_materials=False) to let those register."""
     return f"<emissive>{r} {g} {b} 1</emissive>" if enabled else ""
 
 

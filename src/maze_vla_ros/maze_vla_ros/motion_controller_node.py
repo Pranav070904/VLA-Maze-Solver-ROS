@@ -26,17 +26,11 @@ class MotionController(Node):
         super().__init__('motion_controller')
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.done_pub = self.create_publisher(Bool, '/episode_done', 10)
-        # on_pose/on_goals are reentrant so they keep getting serviced on the
-        # other executor thread while on_action is blocked inside execute_move.
-        # on_action itself must NOT be reentrant: two queued /agent_action
-        # messages could otherwise both invoke on_action concurrently, both
-        # read self.busy==False before either sets it (no lock), and both
-        # call execute_move at once -- two threads fighting over /cmd_vel
-        # simultaneously. MutuallyExclusive guarantees at most one at a time.
+        # on_action must stay mutually exclusive: reentrant would let two
+        # queued actions both pass the (unlocked) busy check and run at once.
         reentrant = ReentrantCallbackGroup()
         action_group = MutuallyExclusiveCallbackGroup()
-        # depth=1: don't let a backlog of stale actions build up while busy --
-        # when we free up, act on the newest available action, not an ~1s-old one
+        # depth=1 so a freed-up controller acts on the newest action, not a stale queued one
         self.create_subscription(Int8, '/agent_action', self.on_action, 1, callback_group=action_group)
         self.create_subscription(Pose, '/model/robot/pose', self.on_pose, 10, callback_group=reentrant)
         self.create_subscription(Float32MultiArray, '/goal_positions', self.on_goals, GOAL_QOS, callback_group=reentrant)
@@ -62,15 +56,11 @@ class MotionController(Node):
         finally:
             self.busy = False
 
-    # ------------------------------------------------------------------
-    # one discrete step, mirroring MazeEnv.step()
-    # ------------------------------------------------------------------
-
     def execute_move(self, action):
+        """One discrete step, mirroring MazeEnv.step()."""
         yaw = ACTION_YAW.get(action)
         if yaw is None:
             return
-        # snap to the grid: cell centres are at integer world coords
         cx, cy = round(self.pose.position.x), round(self.pose.position.y)
         tx, ty = cx + round(math.cos(yaw)), cy + round(math.sin(yaw))
         self.get_logger().info(f"step {self.steps} action={action} cell=({cx},{cy}) -> ({tx},{ty})")
@@ -78,8 +68,6 @@ class MotionController(Node):
         self.rotate_to(yaw)
         arrived = self.drive_to(tx, ty)
         if not arrived:
-            # wall bump: env leaves the agent where it was, so return to the
-            # cell centre we started from and let the model try again
             self.get_logger().info("blocked, returning to cell centre")
             self.rotate_to(math.atan2(cy - self.pose.position.y, cx - self.pose.position.x))
             self.drive_to(cx, cy)
@@ -96,10 +84,6 @@ class MotionController(Node):
         self.goals = None   # ignore actions until maze_manager publishes new goals
         self.done_pub.publish(Bool(data=True))
 
-    # ------------------------------------------------------------------
-    # low-level motion
-    # ------------------------------------------------------------------
-
     def rotate_to(self, target_yaw, tolerance=0.05, timeout=6.0):
         twist = Twist()
         deadline = time.monotonic() + timeout
@@ -110,7 +94,7 @@ class MotionController(Node):
             if time.monotonic() > deadline:
                 self.get_logger().warn(f"rotate_to timed out, error={error:.2f}")
                 break
-            # proportional, but never below a floor that can overcome wheel stiction
+            # ANG_MIN floors the speed so it can overcome wheel stiction
             w = max(ANG_MIN, min(ANG_CLAMP, 2.5 * abs(error)))
             twist.angular.z = math.copysign(w, error)
             self.cmd_pub.publish(twist)
@@ -141,10 +125,6 @@ class MotionController(Node):
             twist.angular.z = max(-ANG_CLAMP, min(ANG_CLAMP, 2.0 * err))
             self.cmd_pub.publish(twist)
             time.sleep(0.02)
-
-    # ------------------------------------------------------------------
-    # helpers
-    # ------------------------------------------------------------------
 
     def _at_a_goal(self):
         if not self.goals:
