@@ -1,0 +1,25 @@
+# separate repo, tracked on its own -- see VLA-Maze-Solver/.git
+src/maze_vla_ros/VLA-Maze-Solver/
+
+# colcon build artifacts
+build/
+install/
+log/
+
+# python
+venv/
+__pycache__/
+*.pyc
+
+# editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# not part of the running pipeline -- notes, one-off debug/eval helpers, slides
+CLAUDE.md
+check_directions.sh
+dump_obs.py
+tally_episodes.py
+maze_vla_progress_update.pptx

@@ -1,0 +1,190 @@
+<?xml version="1.0" ?>
+<sdf version="1.8">
+  <world name="maze_world">
+
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <!-- no shadows: the model was trained on flat unlit renders, and a shadow
+         draped across a corridor reads as a wall to the wall CNN -->
+    <light type="directional" name="sun">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 15 0 0 0</pose>
+      <diffuse>0.9 0.9 0.9 1</diffuse>
+      <specular>0.3 0.3 0.3 1</specular>
+      <direction>-0.3 0.3 -0.9</direction>
+    </light>
+
+    <!-- Overhead camera, static, looking straight down. 11x11 maze, cell_size=1.0 -->
+    <model name="overhead_camera">
+      <static>true</static>
+      <!-- pitch 90 = look straight down; yaw 90 makes image-right = world +x and
+           image-up = world +y, matching cell_to_world (x=col, y=-row) so the
+           camera frame reads exactly like the model's training renders -->
+      <pose>5 -5 12 0 1.5708 1.5708</pose>
+      <link name="camera_link">
+        <sensor name="overhead_camera" type="camera">
+          <camera>
+            <!-- footprint = 2*height*tan(fov/2) = 2*12*tan(0.43) ~= 11m, matching
+                 the 11x11 grid exactly so the maze fills the frame like training does -->
+            <horizontal_fov>0.86</horizontal_fov>
+            <image>
+              <width>256</width>
+              <height>256</height>
+            </image>
+            <clip>
+              <near>0.1</near>
+              <far>50</far>
+            </clip>
+            <!-- PERTURBATION: gaussian sensor noise, simulating a cheaper/real camera -->
+            <noise>
+              <type>gaussian</type>
+              <mean>0.0</mean>
+              <stddev>0.02</stddev>
+            </noise>
+          </camera>
+          <always_on>true</always_on>
+          <update_rate>10</update_rate>
+          <visualize>false</visualize>
+          <topic>overhead_camera/image_raw</topic>
+        </sensor>
+      </link>
+    </model>
+
+    <!-- Minimal differential-drive robot -->
+    <model name="robot">
+      <pose>0 0 0.1 0 0 0</pose>
+
+      <link name="chassis">
+        <inertial>
+          <mass>1.0</mass>
+          <inertia>
+            <ixx>0.01</ixx><iyy>0.01</iyy><izz>0.01</izz>
+            <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+          </inertia>
+        </inertial>
+        <collision name="chassis_collision">
+          <geometry><box><size>0.3 0.2 0.1</size></box></geometry>
+        </collision>
+        <visual name="chassis_visual">
+          <geometry><box><size>0.3 0.2 0.1</size></box></geometry>
+          <material><ambient>0 0 1 1</ambient><diffuse>0 0 1 1</diffuse></material>
+        </visual>
+      </link>
+
+      <!-- Flat overhead marker, visual-only: the bare 0.3x0.2 chassis renders as
+           roughly 1px from the overhead camera and is effectively invisible to the
+           model. Training draws the agent as a filled circle with diameter ~0.7x
+           the cell width, so this disc (0.7m diameter in a 1m cell) matches that
+           proportion instead of relying on the true (much smaller) chassis silhouette. -->
+      <link name="top_marker">
+        <pose>0 0 0.075 0 0 0</pose>
+        <visual name="top_marker_visual">
+          <geometry><cylinder><radius>0.35</radius><length>0.05</length></cylinder></geometry>
+          <material><ambient>0 0 1 1</ambient><diffuse>0 0 1 1</diffuse><emissive>0 0 1 1</emissive></material>
+        </visual>
+      </link>
+
+      <joint name="top_marker_joint" type="fixed">
+        <parent>chassis</parent>
+        <child>top_marker</child>
+      </joint>
+
+      <link name="left_wheel">
+        <pose>0 0.12 -0.03 1.5708 0 0</pose>
+        <inertial><mass>0.1</mass><inertia><ixx>0.001</ixx><iyy>0.001</iyy><izz>0.001</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
+        <collision name="left_wheel_collision">
+          <geometry><cylinder><radius>0.05</radius><length>0.04</length></cylinder></geometry>
+        </collision>
+        <visual name="left_wheel_visual">
+          <geometry><cylinder><radius>0.05</radius><length>0.04</length></cylinder></geometry>
+          <material><ambient>0.1 0.1 0.1 1</ambient></material>
+        </visual>
+      </link>
+
+      <link name="right_wheel">
+        <pose>0 -0.12 -0.03 1.5708 0 0</pose>
+        <inertial><mass>0.1</mass><inertia><ixx>0.001</ixx><iyy>0.001</iyy><izz>0.001</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
+        <collision name="right_wheel_collision">
+          <geometry><cylinder><radius>0.05</radius><length>0.04</length></cylinder></geometry>
+        </collision>
+        <visual name="right_wheel_visual">
+          <geometry><cylinder><radius>0.05</radius><length>0.04</length></cylinder></geometry>
+          <material><ambient>0.1 0.1 0.1 1</ambient></material>
+        </visual>
+      </link>
+
+      <link name="caster">
+        <pose>-0.12 0 -0.02 0 0 0</pose>
+        <inertial><mass>0.05</mass><inertia><ixx>0.0001</ixx><iyy>0.0001</iyy><izz>0.0001</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
+        <collision name="caster_collision">
+          <geometry><sphere><radius>0.06</radius></sphere></geometry>
+          <!-- the caster joint is fixed (can't roll/swivel like a real caster), so
+               without near-zero friction here it drags on the floor and resists
+               the chassis's rotation, torquing it into a tip during turns -->
+          <surface><friction><ode><mu>0.01</mu><mu2>0.01</mu2></ode></friction></surface>
+        </collision>
+        <visual name="caster_visual">
+          <geometry><sphere><radius>0.06</radius></sphere></geometry>
+        </visual>
+      </link>
+
+      <!-- axis given in the model frame: the wheel links are rolled +90deg so
+           their local z points along -y, which made positive joint velocity roll
+           the robot BACKWARDS (and mirrored the odometry to match). +y in the
+           model frame is the correct axle direction for a forward-rolling wheel. -->
+      <joint name="left_wheel_joint" type="revolute">
+        <parent>chassis</parent>
+        <child>left_wheel</child>
+        <axis><xyz expressed_in="__model__">0 1 0</xyz></axis>
+      </joint>
+
+      <joint name="right_wheel_joint" type="revolute">
+        <parent>chassis</parent>
+        <child>right_wheel</child>
+        <axis><xyz expressed_in="__model__">0 1 0</xyz></axis>
+      </joint>
+
+      <joint name="caster_joint" type="fixed">
+        <parent>chassis</parent>
+        <child>caster</child>
+      </joint>
+
+      <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
+        <left_joint>left_wheel_joint</left_joint>
+        <right_joint>right_wheel_joint</right_joint>
+        <wheel_separation>0.24</wheel_separation>
+        <wheel_radius>0.05</wheel_radius>
+        <topic>cmd_vel</topic>
+        <odom_topic>model/robot/odometry</odom_topic>
+        <frame_id>odom</frame_id>
+        <child_frame_id>base_link</child_frame_id>
+        <!-- without these, cmd_vel steps (e.g. rotate_to's proportional control
+             snapping straight to 2x the angle error) apply as an instant velocity
+             jump, which was enough to tip this light (1kg) chassis and corrupt
+             the odometry-derived yaw for every move after that -->
+        <max_linear_acceleration>1.0</max_linear_acceleration>
+        <min_linear_acceleration>-1.0</min_linear_acceleration>
+        <max_angular_acceleration>2.0</max_angular_acceleration>
+        <min_angular_acceleration>-2.0</min_angular_acceleration>
+      </plugin>
+
+      <plugin filename="gz-sim-pose-publisher-system" name="gz::sim::systems::PosePublisher">
+        <publish_link_pose>false</publish_link_pose>
+        <publish_model_pose>true</publish_model_pose>
+        <use_pose_vector_msg>false</use_pose_vector_msg>
+      </plugin>
+
+    </model>
+
+  </world>
+</sdf>
