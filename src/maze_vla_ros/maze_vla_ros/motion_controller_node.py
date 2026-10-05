@@ -5,7 +5,8 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
 from rclpy.qos import QoSProfile, DurabilityPolicy
-from std_msgs.msg import Int8, Bool, Float32MultiArray
+from collections import deque
+from std_msgs.msg import Int8, Bool, Float32MultiArray, String
 from geometry_msgs.msg import Twist, Pose
 
 CELL_SIZE = 1.0
@@ -14,18 +15,27 @@ CELL_SIZE = 1.0
 ACTION_YAW = {0: math.pi / 2, 1: -math.pi / 2, 2: math.pi, 3: 0.0}
 GOAL_QOS = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
 GOAL_RADIUS = 0.5       # within half a cell counts as "reached"
-MAX_STEPS = 200         # matches MazeEnv(max_steps=200)
+# the policy can livelock, flip-flopping between two cells forever. At ~8s per
+# step a 200-step timeout is ~28min, so cut an episode short once the recent
+# cell history collapses to a 1- or 2-cell cycle.
+LIVELOCK_WINDOW = 8
+LIVELOCK_CELLS = 2
 ARRIVE_TOL = 0.06       # how close to a cell centre counts as arrived
 LIN_SPEED = 0.25
 ANG_CLAMP = 1.0
 ANG_MIN = 0.3
+STALL_TIMEOUT = 1.5    # sim seconds without closing distance -> treat as blocked
+WALL_BACKSTOP = 120.0  # real seconds; only trips if /clock stops, to avoid hanging
 
 
 class MotionController(Node):
     def __init__(self):
         super().__init__('motion_controller')
+        self.declare_parameter('max_steps', 200)  # matches MazeEnv(max_steps=200)
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.done_pub = self.create_publisher(Bool, '/episode_done', 10)
+        # 'red' | 'green' | 'timeout' | 'livelock', for the eval harness
+        self.outcome_pub = self.create_publisher(String, '/episode_outcome', 10)
         # on_action must stay mutually exclusive: reentrant would let two
         # queued actions both pass the (unlocked) busy check and run at once.
         reentrant = ReentrantCallbackGroup()
@@ -38,6 +48,7 @@ class MotionController(Node):
         self.busy = False
         self.goals = None   # None also means "between episodes": ignore actions
         self.steps = 0
+        self.recent_cells = deque(maxlen=LIVELOCK_WINDOW)
 
     def on_pose(self, msg: Pose):
         self.pose = msg
@@ -46,6 +57,7 @@ class MotionController(Node):
         red_x, red_y, green_x, green_y = msg.data
         self.goals = [(red_x, red_y), (green_x, green_y)]
         self.steps = 0  # new goal positions == new episode fully set up
+        self.recent_cells.clear()
 
     def on_action(self, msg: Int8):
         if self.busy or self.pose is None or self.goals is None:
@@ -72,26 +84,45 @@ class MotionController(Node):
             self.rotate_to(math.atan2(cy - self.pose.position.y, cx - self.pose.position.x))
             self.drive_to(cx, cy)
         self.steps += 1
+        self.recent_cells.append((round(self.pose.position.x), round(self.pose.position.y)))
 
-        if self._at_a_goal():
-            self.get_logger().info(f"goal reached in {self.steps} steps -- resetting")
-            self._end_episode()
-        elif self.steps >= MAX_STEPS:
+        reached = self._goal_reached()
+        max_steps = self.get_parameter('max_steps').value
+        if reached:
+            self.get_logger().info(f"{reached} goal reached in {self.steps} steps -- resetting")
+            self._end_episode(reached)
+        elif self.steps >= max_steps:
             self.get_logger().info(f"timeout after {self.steps} steps -- resetting")
-            self._end_episode()
+            self._end_episode('timeout')
+        elif self._livelocked():
+            self.get_logger().warn(
+                f"livelocked: last {LIVELOCK_WINDOW} steps covered only "
+                f"{len(set(self.recent_cells))} cell(s) -- resetting")
+            self._end_episode('livelock')
 
-    def _end_episode(self):
+    def _livelocked(self):
+        return (len(self.recent_cells) == LIVELOCK_WINDOW
+                and len(set(self.recent_cells)) <= LIVELOCK_CELLS)
+
+    def _end_episode(self, outcome):
         self.goals = None   # ignore actions until maze_manager publishes new goals
+        self.outcome_pub.publish(String(data=outcome))
         self.done_pub.publish(Bool(data=True))
+
+    def _now(self):
+        """Sim seconds (use_sim_time), so timeouts don't fire early when the
+        real-time factor drops below 1."""
+        return self.get_clock().now().nanoseconds * 1e-9
 
     def rotate_to(self, target_yaw, tolerance=0.05, timeout=6.0):
         twist = Twist()
-        deadline = time.monotonic() + timeout
+        deadline = self._now() + timeout
+        wall_stop = time.monotonic() + WALL_BACKSTOP
         while True:
             error = self._angle_diff(target_yaw, self._yaw())
             if abs(error) < tolerance:
                 break
-            if time.monotonic() > deadline:
+            if self._now() > deadline or time.monotonic() > wall_stop:
                 self.get_logger().warn(f"rotate_to timed out, error={error:.2f}")
                 break
             # ANG_MIN floors the speed so it can overcome wheel stiction
@@ -105,8 +136,9 @@ class MotionController(Node):
         """Drive to an absolute point, steering to correct lateral error on the
         way. Returns False if it stalled (blocked) before arriving."""
         twist = Twist()
-        deadline = time.monotonic() + timeout
-        last_progress_t = time.monotonic()
+        deadline = self._now() + timeout
+        wall_stop = time.monotonic() + WALL_BACKSTOP
+        last_progress_t = self._now()
         last_d = self._dist_to(tx, ty)
         while True:
             d = self._dist_to(tx, ty)
@@ -114,8 +146,9 @@ class MotionController(Node):
                 self.cmd_pub.publish(Twist())
                 return True
             if d < last_d - 0.01:
-                last_d, last_progress_t = d, time.monotonic()
-            if time.monotonic() - last_progress_t > 1.5 or time.monotonic() > deadline:
+                last_d, last_progress_t = d, self._now()
+            if (self._now() - last_progress_t > STALL_TIMEOUT or self._now() > deadline
+                    or time.monotonic() > wall_stop):
                 self.cmd_pub.publish(Twist())
                 self.get_logger().warn(f"drive_to stalled {d:.2f}m from target")
                 return False
@@ -126,10 +159,14 @@ class MotionController(Node):
             self.cmd_pub.publish(twist)
             time.sleep(0.02)
 
-    def _at_a_goal(self):
+    def _goal_reached(self):
+        """Which goal the robot is standing on, if any. goals is [red, green]."""
         if not self.goals:
-            return False
-        return any(self._dist_to(gx, gy) < GOAL_RADIUS for gx, gy in self.goals)
+            return None
+        for name, (gx, gy) in zip(('red', 'green'), self.goals):
+            if self._dist_to(gx, gy) < GOAL_RADIUS:
+                return name
+        return None
 
     def _dist_to(self, x, y):
         return math.hypot(self.pose.position.x - x, self.pose.position.y - y)
@@ -146,7 +183,7 @@ class MotionController(Node):
 def main():
     rclpy.init()
     node = MotionController()
-    executor = MultiThreadedExecutor(num_threads=2)
+    executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
     executor.spin()
     rclpy.shutdown()

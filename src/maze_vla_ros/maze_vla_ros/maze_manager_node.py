@@ -10,7 +10,7 @@ from std_msgs.msg import Bool, Float32MultiArray
 
 GOAL_QOS = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
 
-from maze_vla_ros.maze_to_sdf import wall_models, goal_model, floor_model, cell_to_world
+from maze_vla_ros.maze_to_sdf import wall_models, goal_model, floor_model, cell_to_world, TEXTURE_PATH
 from env_wrapper import MazeEnv
 
 WORLD = "maze_world"
@@ -23,6 +23,8 @@ class MazeManager(Node):
         self.env = MazeEnv(maze_size=5, render_size=64, max_steps=200)
         self.spawned = []
         self.declare_parameter('flat_materials', True)
+        self.declare_parameter('floor_texture', False)
+        self.declare_parameter('floor_texture_path', TEXTURE_PATH)
 
         self.goal_pub = self.create_publisher(Float32MultiArray, '/goal_positions', GOAL_QOS)
         self.create_subscription(Bool, '/episode_done', self.on_episode_done, 10)
@@ -77,8 +79,11 @@ class MazeManager(Node):
 
     def spawn_maze(self):
         flat = self.get_parameter('flat_materials').value
+        texture = self.get_parameter('floor_texture').value
+        texture_path = self.get_parameter('floor_texture_path').value
 
-        name, sdf, x, y, z = floor_model(self.env.grid.shape, CELL_SIZE, flat_materials=flat)
+        name, sdf, x, y, z = floor_model(self.env.grid.shape, CELL_SIZE, flat_materials=flat,
+                                          texture=texture, texture_path=texture_path)
         self.spawn(name, sdf, x, y, z)
 
         for name, sdf, x, y, z in wall_models(self.env.grid, CELL_SIZE):

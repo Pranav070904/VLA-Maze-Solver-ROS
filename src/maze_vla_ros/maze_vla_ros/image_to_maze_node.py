@@ -5,29 +5,47 @@ from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 import cv2
 
-# must match env_wrapper.py's MazeEnv.COLOR_MAP exactly -- the model was
-# trained on frames made of only these five flat colors.
-BLACK_THRESH = 40   # every channel below this -> wall
-CHROMA_THRESH = 60  # max-min channel spread below this -> gray/white, not a colored entity
+BLACK_THRESH = 40
+CHROMA_THRESH = 60
+HUE_TOL = 8
+MAX_ENTITY_AREA = 150
 WHITE = np.array([255, 255, 255], dtype=np.uint8)
 BLACK = np.array([0, 0, 0], dtype=np.uint8)
-ENTITY_COLORS = np.array([[255, 0, 0], [0, 255, 0], [0, 0, 255]], dtype=np.uint8)  # indexed by argmax channel
+ENTITY_COLORS = np.array([[255, 0, 0], [0, 255, 0], [0, 0, 255]], dtype=np.uint8)
+TARGET_HUES = np.array([0, 60, 120])
 
 
 def snap_to_palette(frame):
     px = frame.reshape(-1, 3).astype(np.int32)
     is_black = px.max(axis=1) < BLACK_THRESH
-    # classify by chroma, not nearest-RGB-distance: a dark shadow gray like
-    # (40,40,40) is numerically closer to red than to white (only 2 channels
-    # differ vs 3), so a grayish pixel must snap to white regardless of how dark it is.
     chroma = px.max(axis=1) - px.min(axis=1)
-    is_colored = chroma >= CHROMA_THRESH
-    dominant_channel = px.argmax(axis=1)
+    is_grayish = chroma < CHROMA_THRESH
+
+    hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV).reshape(-1, 3)
+    hue = hsv[:, 0].astype(np.int32)
+    hue_dist = np.abs(hue[:, None] - TARGET_HUES[None, :])
+    hue_dist = np.minimum(hue_dist, 180 - hue_dist)
+    nearest_hue = hue_dist.argmin(axis=1)
+    is_colored = ~is_grayish & (hue_dist.min(axis=1) <= HUE_TOL)
 
     out = np.tile(WHITE, (px.shape[0], 1))
-    out[is_colored] = ENTITY_COLORS[dominant_channel[is_colored]]
+    out[is_colored] = ENTITY_COLORS[nearest_hue[is_colored]]
     out[is_black] = BLACK
-    return out.reshape(frame.shape).astype(np.uint8)
+    out = out.reshape(frame.shape).astype(np.uint8)
+    return _drop_oversized_entities(out)
+
+
+def _drop_oversized_entities(out):
+    """Revert entity-coloured regions too big to be a goal/agent back to floor."""
+    for colour in ENTITY_COLORS:
+        mask = np.all(out == colour, axis=2).astype(np.uint8)
+        if not mask.any():
+            continue
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        for i in range(1, n):
+            if stats[i, cv2.CC_STAT_AREA] > MAX_ENTITY_AREA:
+                out[labels == i] = WHITE
+    return out
 
 
 class ImageToMaze(Node):
@@ -37,13 +55,9 @@ class ImageToMaze(Node):
         self.bridge = CvBridge()
         self.create_subscription(Image, '/overhead_camera/image_raw', self.cb, 10)
         self.pub = self.create_publisher(Image, '/maze_obs', 10)
-        # always published regardless of the threshold param, so it can be
-        # inspected independent of whether it's actually fed to the model
         self.debug_pub = self.create_publisher(Image, '/maze_obs_thresholded', 10)
 
     def _to_msg(self, frame, header):
-        # cv_bridge 4.1.0's cv2_to_imgmsg raises KeyError for 'rgb8', so build
-        # via passthrough and set the encoding directly instead
         out = self.bridge.cv2_to_imgmsg(frame, encoding='passthrough')
         out.encoding = 'rgb8'
         out.header = header

@@ -22,9 +22,11 @@ FLOOR_SDF = """<sdf version="1.8">
   <link name="link">
     <collision name="col"><geometry><box><size>{w} {h} 0.02</size></box></geometry></collision>
     <visual name="vis"><geometry><box><size>{w} {h} 0.02</size></box></geometry>
-      <material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse>{emissive}</material></visual>
+      <material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse>{emissive}{texture}</material></visual>
   </link>
 </model></sdf>"""
+
+TEXTURE_PATH = "/home/pranav/maze_vla_ws/src/maze_vla_ros/worlds/textures/floor_checker.png"
 
 
 def cell_to_world(row, col, cell_size=1.0):
@@ -55,9 +57,13 @@ def goal_model(name, row, col, color, cell_size=1.0, flat_materials=True):
     return name, GOAL_SDF.format(name=name, x=x, y=y, r=r, g=g, b=b, emissive=emissive), x, y, 0.15
 
 
-def floor_model(grid_shape, cell_size=1.0, flat_materials=True):
+def floor_model(grid_shape, cell_size=1.0, flat_materials=True, texture=False, texture_path=TEXTURE_PATH):
     h, w = grid_shape
     cx, cy = (w - 1) * cell_size / 2, -(h - 1) * cell_size / 2
-    emissive = _emissive_tag(flat_materials)
-    return ("maze_floor", FLOOR_SDF.format(cx=cx, cy=cy, w=w * cell_size, h=h * cell_size, emissive=emissive),
+    # texture implies flat_materials=False: emissive would wash the texture
+    # back out to flat white, defeating the point of adding it
+    emissive = _emissive_tag(flat_materials and not texture)
+    tex = f"<pbr><metal><albedo_map>{texture_path}</albedo_map></metal></pbr>" if texture else ""
+    return ("maze_floor",
+            FLOOR_SDF.format(cx=cx, cy=cy, w=w * cell_size, h=h * cell_size, emissive=emissive, texture=tex),
             cx, cy, -0.01)

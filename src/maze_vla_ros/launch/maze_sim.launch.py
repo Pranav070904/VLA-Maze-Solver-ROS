@@ -28,6 +28,21 @@ def generate_launch_description():
                      'shadow/noise/lighting perturbations'
     )
 
+    floor_texture_arg = DeclareLaunchArgument(
+        'floor_texture', default_value='false',
+        description='true tiles a checker texture onto the floor instead of flat white -- '
+                     'stresses wall/floor edge detection independent of lighting. '
+                     'The floor material auto-disables its own emissive when this is set, '
+                     'so it does not need flat_materials=false to be visible.'
+    )
+
+    floor_texture_path_arg = DeclareLaunchArgument(
+        'floor_texture_path',
+        default_value='/home/pranav/maze_vla_ws/src/maze_vla_ros/worlds/textures/floor_checker.png',
+        description='absolute path to the image used for floor_texture:=true -- swap in any '
+                     'image without touching code or rebuilding'
+    )
+
     # start paused so the robot doesn't fall before maze_manager spawns the floor
     gz_sim = ExecuteProcess(
         cmd=['gz', 'sim', world_path],
@@ -41,6 +56,9 @@ def generate_launch_description():
             '/overhead_camera/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
             '/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist',
             '/model/robot/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry',
+            # sim clock: motion_controller's timeouts must be in sim time, or a
+            # real-time factor below 1 makes them fire early and look like stalls
+            '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
             # ground-truth pose: odometry is wheel dead-reckoning and does not
             # follow the set_pose teleport that maze_manager does on every reset
             '/model/robot/pose@geometry_msgs/msg/Pose[gz.msgs.Pose',
@@ -59,12 +77,19 @@ def generate_launch_description():
         Node(package='maze_vla_ros', executable='vla_inference', output='screen')
     ])
     motion_controller = TimerAction(period=3.0, actions=[
-        Node(package='maze_vla_ros', executable='motion_controller', output='screen')
+        Node(
+            package='maze_vla_ros', executable='motion_controller', output='screen',
+            parameters=[{'use_sim_time': True}]
+        )
     ])
     maze_manager = TimerAction(period=5.0, actions=[
         Node(
             package='maze_vla_ros', executable='maze_manager', output='screen',
-            parameters=[{'flat_materials': ParameterValue(LaunchConfiguration('flat_materials'), value_type=bool)}]
+            parameters=[{
+                'flat_materials': ParameterValue(LaunchConfiguration('flat_materials'), value_type=bool),
+                'floor_texture': ParameterValue(LaunchConfiguration('floor_texture'), value_type=bool),
+                'floor_texture_path': LaunchConfiguration('floor_texture_path'),
+            }]
         )
     ])
 
@@ -72,6 +97,8 @@ def generate_launch_description():
         world_arg,
         flat_materials_arg,
         threshold_arg,
+        floor_texture_arg,
+        floor_texture_path_arg,
         gz_sim,
         bridge,
         image_to_maze,
